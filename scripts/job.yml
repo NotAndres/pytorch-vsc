@@ -1,0 +1,44 @@
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: vaejob
+  namespace: project # Change this
+spec:
+  backoffLimit: 0
+  template:        
+    metadata:
+      name: vaejob
+    spec:
+      containers:
+      - name: vaejob-container  
+        image: notandres/pytorch-custom:1.0
+        command: ["python3", "/nfs/vae.py"]
+        args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--beta", "$(BETA)", "--epochs", "$(EPOCHS)"]
+        resources:
+          requests:
+            cpu: "2000m" 
+            memory: "4Gi"
+            nvidia.com/gpu: 1 
+          limits:
+            cpu: "4000m" 
+            memory: "8Gi"
+            nvidia.com/gpu: 1 
+        volumeMounts:
+        - mountPath: /nfs
+          name: nfs-access
+        env:
+        - name: BASE_DIR
+          value: "/nfs/runs"
+        - name: DATASET_DIR
+          value: "/nfs/segimage_newest2_withoutedge/"
+        - name: BETA
+          value: "1"
+        - name: EPOCHS
+          value: "200"
+      volumes:
+      - name: nfs-access
+        persistentVolumeClaim: 
+          claimName: claim # Change this
+      nodeSelector:
+        node-role.ida/gputitan: "true"
+      restartPolicy: Never

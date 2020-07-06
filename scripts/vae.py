@@ -3,6 +3,8 @@ import json
 import os
 import time
 from pathlib import Path
+from os import listdir
+from os.path import isfile, join
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -18,14 +20,13 @@ from torchvision import datasets, transforms
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--base_dir', help='Directory where results will be stored', default='')
-parser.add_argument('-- dataset_dir', help='Path to the dataset to use')
+parser.add_argument('--dataset_dir', help='Path to the dataset to use')
 parser.add_argument('--beta', help='Beta value for the KLD', type=int, default=1)
 parser.add_argument('--lr', help='Learning rate to be used in the optimizer', type=float, default=1e-4)
 parser.add_argument('--epochs', help='Number of epochs to train for', type=int, default=50)
 parser.add_argument('--batch_size', help='Size of mini batches', type=int, default=128)
 parser.add_argument('--checkpoints', help='Store model every 10 epochs', type=bool, default=True)
 args = parser.parse_args()
-print(args)
 
 base_dir = args.base_dir
 beta = args.beta
@@ -36,12 +37,10 @@ data_dir = args.dataset_dir
 checkpoints = args.checkpoints
 # Make this an arg later
 latent_dim = 256
+print(args)
 
 if base_dir and not os.path.exists(base_dir):
     raise FileNotFoundError("Base directory doesnt exist")
-
-if not data_dir or not os.path.exists(data_dir):
-    raise FileNotFoundError("Invalid path to dataset")
 
 folder_name = '/epochs' + str(epochs) + 'beta' + str(beta) + "lr" + str(learning_rate) + "/"
 recon_folder = base_dir + folder_name + 'reconstruction/'
@@ -229,7 +228,7 @@ def train(model, optimizer, epoch, train_loader):
         data = data.to(device)
         optimizer.zero_grad()
         recon_batch, mu, logvar = model(data)
-        loss, mse, kld = loss_function(recon_batch, data, mu, logvar, epoch)
+        loss, mse, kld = loss_function(recon_batch, data, mu, logvar)
 
         loss.backward()
         optimizer.step()
@@ -265,7 +264,7 @@ def test(model, epoch, test_loader):
         for i, (data, _) in enumerate(test_loader):
             data = data.to(device)
             recon_batch, mu, logvar = model(data)
-            loss, mse, kld = loss_function(recon_batch, data, mu, logvar, epoch)
+            loss, mse, kld = loss_function(recon_batch, data, mu, logvar)
 
             current_batch_size = data.size(0)
             test_loss += loss.item() * current_batch_size
@@ -345,7 +344,7 @@ for epoch in range(1, epochs + 1):
 
 print("**** Saving loss data ****")
 trace = {'train': train_trace, 'validation': val_trace}
-with open(folder_name + 'loss.json', 'w') as file:
+with open(base_dir + folder_name + 'loss.json', 'w') as file:
     json.dump(trace, file)
 
 print("Training finished")
