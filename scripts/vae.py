@@ -302,7 +302,6 @@ if parallel and torch.cuda.device_count() > 1:
     print("Setting model for multiple GPUs")
     print("GPUs: ", torch.cuda.device_count())
     model = nn.DataParallel(model)
-    model.
 
 model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -335,7 +334,10 @@ for epoch in range(1, epochs + 1):
 
     with torch.no_grad():
         sample = torch.randn(4, 256).to(device)
-        sample = model.decode(sample).cpu()
+        if parallel:
+            sample = model.module.decode(sample).cpu()
+        else:
+            sample = model.decode(sample).cpu()
         sample = torchvision.utils.make_grid(sample)
         imshow(sample)
         plt.savefig(samples_folder + 'sample_' + str(epoch) + '.png')
