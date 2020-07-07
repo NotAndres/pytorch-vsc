@@ -26,6 +26,7 @@ parser.add_argument('--lr', help='Learning rate to be used in the optimizer', ty
 parser.add_argument('--epochs', help='Number of epochs to train for', type=int, default=50)
 parser.add_argument('--batch_size', help='Size of mini batches', type=int, default=128)
 parser.add_argument('--checkpoints', help='Store model every 10 epochs', type=bool, default=True)
+parser.add_argument('--parallel', help='Set true for multiple gpus', type=bool, default=False)
 args = parser.parse_args()
 
 base_dir = args.base_dir
@@ -35,6 +36,7 @@ learning_rate = args.lr
 batch_size = args.batch_size
 data_dir = args.dataset_dir
 checkpoints = args.checkpoints
+parallel = args.parallel
 # Make this an arg later
 latent_dim = 256
 print(args)
@@ -295,8 +297,15 @@ def test(model, epoch, test_loader):
 train_data, val_data, test_data = split_data(data_dir=data_dir, batch_size=batch_size)
 
 # Model and optimizer
-model = VAE(latent_dim).to(device)
-optimizer = optim.Adam(model.parameters(), lr=1e-4)
+model = VAE(latent_dim)
+if parallel and torch.cuda.device_count() > 1:
+    print("Setting model for multiple GPUs")
+    print("GPUs: ", torch.cuda.device_count())
+    model = nn.DataParallel(model)
+    model.
+
+model.to(device)
+optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 # dicts to keep track of loss
 train_trace = {
