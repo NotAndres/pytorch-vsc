@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: vaejob
-  namespace: namespace # Change this
+  namespace: 2446502gproject # Change this
 spec:
   backoffLimit: 0
   template:        
@@ -11,7 +11,7 @@ spec:
     spec:
       containers:
       - name: vaejob-container  
-        image: notandres/pytorch-custom:1.0
+        image: notandres/pytorch-custom:1.1
         command: ["python3", "/nfs/vae.py"]
         args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--beta", "$(BETA)", "--epochs", "$(EPOCHS)", "--parallel", "$(PARALLEL)", "--num_workers", "$(NUM_WORKERS)"]
         resources:
@@ -46,7 +46,7 @@ spec:
       volumes:
       - name: nfs-access
         persistentVolumeClaim: 
-          claimName: claim # Change this
+          claimName: 2446502gvol1claim # Change this
       nodeSelector:
         node-role.ida/gputitan: "true"
       restartPolicy: Never
