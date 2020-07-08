@@ -3,16 +3,16 @@ import json
 import os
 import time
 from pathlib import Path
-from os import listdir
-from os.path import isfile, join
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torchvision
+from tensorboard import program
 from torch import cuda
 from torch import nn, optim
 from torch.utils import data
+from torch.utils.tensorboard import SummaryWriter
 from torchvision import datasets, transforms
 
 # First some utilities so saving everything is easier later
@@ -27,6 +27,7 @@ parser.add_argument('--epochs', help='Number of epochs to train for', type=int, 
 parser.add_argument('--batch_size', help='Size of mini batches', type=int, default=128)
 parser.add_argument('--checkpoints', help='Store model every 10 epochs', type=bool, default=True)
 parser.add_argument('--parallel', help='Set true for multiple gpus', type=bool, default=False)
+parser.add_argument('--num_workers', help="Num of workers (threads) that will retrieve the data", type=int, default=0)
 args = parser.parse_args()
 
 base_dir = args.base_dir
@@ -37,6 +38,7 @@ batch_size = args.batch_size
 data_dir = args.dataset_dir
 checkpoints = args.checkpoints
 parallel = args.parallel
+workers = args.num_workers
 # Make this an arg later
 latent_dim = 256
 print(args)
@@ -44,15 +46,19 @@ print(args)
 if base_dir and not os.path.exists(base_dir):
     raise FileNotFoundError("Base directory doesnt exist")
 
+if data_dir and not os.path.exists(data_dir):
+    raise FileNotFoundError("Invalid path to dataset")
+
 folder_name = '/epochs' + str(epochs) + 'beta' + str(beta) + "lr" + str(learning_rate) + "/"
 recon_folder = base_dir + folder_name + 'reconstruction/'
 samples_folder = base_dir + folder_name + 'samples/'
 model_folder = base_dir + folder_name + 'model/'
+tensorboard_folder = base_dir + folder_name + 'tb/'
 
 Path(recon_folder).mkdir(parents=True, exist_ok=True)
 Path(samples_folder).mkdir(parents=False, exist_ok=True)
 Path(model_folder).mkdir(parents=False, exist_ok=True)
-
+Path(tensorboard_folder).mkdir(parents=False, exist_ok=True)
 # Setting manual seed for reproducibility
 torch.manual_seed(22)
 
@@ -61,9 +67,12 @@ if not cuda.is_available():
     raise RuntimeError('Cuda is not available')
 device = torch.device("cuda")
 
+# TensorBoard
+tb_writer = SummaryWriter(tensorboard_folder)
+os.system(" tensorboard --logdir " + tensorboard_folder + " &")
+
+
 # Model for the VAE
-
-
 class VAE(nn.Module):
     def __init__(self, latent_dim):
         super(VAE, self).__init__()
@@ -152,9 +161,8 @@ dataset_mean = (0.0302, 0.0660, 0.0518)
 dataset_std = (0.0633, 0.0974, 0.0766)
 
 
-def split_data(data_dir, n_split=0.2, batch_size=256):
+def split_data(data_dir, n_split=0.2, batch_size=256, num_workers=0):
     pin_memory = cuda.is_available()
-    workers = 0 if cuda.is_available() else 4
     # Create training and validation datasets
     image_dataset = datasets.ImageFolder(data_dir, transform=transforms.Compose([
         transforms.ToTensor(),
@@ -177,38 +185,36 @@ def split_data(data_dir, n_split=0.2, batch_size=256):
     train_loader = data.DataLoader(
         train_set,
         batch_size=batch_size,
-        num_workers=workers,
+        num_workers=num_workers,
         shuffle=True,
         pin_memory=pin_memory
     )
     val_loader = data.DataLoader(
         val_set,
         batch_size=batch_size,
-        num_workers=workers,
+        num_workers=num_workers,
         shuffle=True,
         pin_memory=pin_memory
     )
     test_loader = data.DataLoader(
         test_set,
         batch_size=batch_size,
-        num_workers=workers,
+        num_workers=num_workers,
         shuffle=True,
         pin_memory=pin_memory
     )
     return train_loader, val_loader, test_loader
 
 
-# This plots a tensor, which makes saving it as an image easier
-def imshow(inp, title=None):
-    inp = inp.numpy().transpose((1, 2, 0))
-    mean = np.array([0.0302, 0.0660, 0.0518])
-    std = np.array([0.0633, 0.0974, 0.0766])
-    inp = std * inp + mean
-    inp = np.clip(inp, 0, 1)
-    plt.figure(figsize=(15,15))
-    plt.imshow(inp)
-    if title is not None:
-        plt.title(title)
+# Make tensor into a grid of images and then remove normalization
+def grid_and_unnormalize(batch_tensor):
+    grid = torchvision.utils.make_grid(batch_tensor)
+    image = grid.numpy().transpose((1, 2, 0))
+    mean = np.asarray(dataset_mean)
+    std = np.asarray(dataset_std)
+    image = std * image + mean
+    image = np.clip(image, 0, 1)
+    return image
 
 
 # Training loop helpers
@@ -276,8 +282,10 @@ def test(model, epoch, test_loader):
             if i == 0:
                 n = min(data.size(0), 8)
                 comparison = torch.cat([data[:n], recon_batch[:n]]).cpu()
-                comparison = torchvision.utils.make_grid(comparison)
-                imshow(comparison)
+                comparison = grid_and_unnormalize(comparison)
+                tb_writer.add_image("Reconstruction/recon_" + str(epoch), comparison, epoch, dataformats='HWC')
+
+                plt.imshow(comparison)
                 plt.savefig(recon_folder + 'reconstruction_' + str(epoch) + '.png')
                 plt.close()
 
@@ -294,7 +302,7 @@ def test(model, epoch, test_loader):
 # Training starts here
 # Splitting data
 
-train_data, val_data, test_data = split_data(data_dir=data_dir, batch_size=batch_size)
+train_data, val_data, test_data = split_data(data_dir=data_dir, batch_size=batch_size, num_workers=workers)
 
 # Model and optimizer
 model = VAE(latent_dim)
@@ -302,6 +310,8 @@ if parallel and torch.cuda.device_count() > 1:
     print("Setting model for multiple GPUs")
     print("GPUs: ", torch.cuda.device_count())
     model = nn.DataParallel(model)
+else:
+    parallel = False
 
 model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -322,15 +332,30 @@ val_trace = {
 # Training loop
 since = time.time()
 for epoch in range(1, epochs + 1):
-    loss, mse, kld = train(model, optimizer, epoch, train_data)
-    train_trace['loss'].append(loss)
-    train_trace['mse'].append(mse)
-    train_trace['kld'].append(kld)
+    train_loss, train_mse, train_kld = train(epoch, train_data)
+    train_trace['loss'].append(train_loss)
+    train_trace['mse'].append(train_mse)
+    train_trace['kld'].append(train_kld)
 
-    loss, mse, kld = test(model, epoch, val_data)
-    val_trace['loss'].append(loss)
-    val_trace['mse'].append(mse)
-    val_trace['kld'].append(kld)
+    val_loss, val_mse, val_kld = test(epoch, val_data)
+    val_trace['loss'].append(val_loss)
+    val_trace['mse'].append(val_mse)
+    val_trace['kld'].append(val_kld)
+
+    tb_writer.add_scalars('Loss/Total', {
+        'train': train_loss,
+        'test': val_loss
+    }, epoch)
+
+    tb_writer.add_scalars('Loss/MSE', {
+        'train': train_mse,
+        'test': val_mse
+    }, epoch)
+
+    tb_writer.add_scalars('Loss/KLD', {
+        'train': train_kld,
+        'test': val_kld
+    }, epoch)
 
     with torch.no_grad():
         sample = torch.randn(4, 256).to(device)
@@ -338,8 +363,10 @@ for epoch in range(1, epochs + 1):
             sample = model.module.decode(sample).cpu()
         else:
             sample = model.decode(sample).cpu()
-        sample = torchvision.utils.make_grid(sample)
-        imshow(sample)
+        sample = grid_and_unnormalize(sample)
+        tb_writer.add_image("Reconstruction/recon_" + str(epoch), sample, epoch, dataformats='HWC')
+
+        plt.imshow(sample)
         plt.savefig(samples_folder + 'sample_' + str(epoch) + '.png')
         plt.close()
 
@@ -358,4 +385,5 @@ trace = {'train': train_trace, 'validation': val_trace}
 with open(base_dir + folder_name + 'loss.json', 'w') as file:
     json.dump(trace, file)
 
+tb_writer.close()
 print("Training finished")

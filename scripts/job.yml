@@ -2,7 +2,7 @@ apiVersion: batch/v1
 kind: Job
 metadata:
   name: vaejob
-  namespace: project # Change this
+  namespace: namespace # Change this
 spec:
   backoffLimit: 0
   template:        
@@ -13,16 +13,16 @@ spec:
       - name: vaejob-container  
         image: notandres/pytorch-custom:1.0
         command: ["python3", "/nfs/vae.py"]
-        args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--beta", "$(BETA)", "--epochs", "$(EPOCHS)"]
+        args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--beta", "$(BETA)", "--epochs", "$(EPOCHS)", "--parallel", "$(PARALLEL)", "--num_workers", "$(NUM_WORKERS)"]
         resources:
           requests:
-            cpu: "2000m" 
-            memory: "4Gi"
-            nvidia.com/gpu: 1 
-          limits:
             cpu: "4000m" 
             memory: "8Gi"
-            nvidia.com/gpu: 1 
+            nvidia.com/gpu: 2 
+          limits:
+            cpu: "4000m" 
+            memory: "16Gi"
+            nvidia.com/gpu: 2 
         volumeMounts:
         - mountPath: /nfs
           name: nfs-access
@@ -30,11 +30,19 @@ spec:
         - name: BASE_DIR
           value: "/nfs/runs"
         - name: DATASET_DIR
-          value: "/nfs/segimage_newest2_withoutedge/"
+          value: "/nfs/dataset/"
         - name: BETA
           value: "1"
         - name: EPOCHS
           value: "200"
+        - name: "PYTHONUNBUFFERED"
+          value: "1"
+        - name: "PARALLEL"
+          value: "True"
+        - name: "NUM_WORKERS"
+          value: "4"
+        - name: "BATCH_SIZE"
+          value: "1024"
       volumes:
       - name: nfs-access
         persistentVolumeClaim: 
