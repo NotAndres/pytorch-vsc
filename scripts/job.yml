@@ -13,7 +13,7 @@ spec:
       - name: vaejob-container  
         image: notandres/pytorch-custom:1.1
         command: ["python3", "/nfs/vae.py"]
-        args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--beta", "$(BETA)", "--epochs", "$(EPOCHS)", "--parallel", "$(PARALLEL)", "--num_workers", "$(NUM_WORKERS)"]
+        args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--beta", "$(BETA)", "--epochs", "$(EPOCHS)", "--parallel", "$(PARALLEL)", "--num_workers", "$(NUM_WORKERS)", "--batch_size", "$(BATCH_SIZE)", "--resume", "$(RESUME)"]
         resources:
           requests:
             cpu: "4000m" 
@@ -42,11 +42,14 @@ spec:
         - name: "NUM_WORKERS"
           value: "4"
         - name: "BATCH_SIZE"
-          value: "1024"
+          value: "128"
+        - name: "RESUME"
+          value: "False"
       volumes:
       - name: nfs-access
         persistentVolumeClaim: 
           claimName: 2446502gvol1claim # Change this
+
       nodeSelector:
         node-role.ida/gputitan: "true"
       restartPolicy: Never

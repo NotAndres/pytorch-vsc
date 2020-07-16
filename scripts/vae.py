@@ -2,18 +2,23 @@ import argparse
 import json
 import os
 import time
+import logging
+from os import listdir
 from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
 import torchvision
-from tensorboard import program
 from torch import cuda
 from torch import nn, optim
 from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import datasets, transforms
+
+FORMAT = '%(asctime) - [%(level)-8s]: %(message)s'
+logging.basicConfig(format=FORMAT)
+logger = logging.getLogger('trainer')
 
 # First some utilities so saving everything is easier later
 # Also this makes it easier to run the model with different hyper parameters
@@ -28,6 +33,7 @@ parser.add_argument('--batch_size', help='Size of mini batches', type=int, defau
 parser.add_argument('--checkpoints', help='Store model every 10 epochs', type=bool, default=True)
 parser.add_argument('--parallel', help='Set true for multiple gpus', type=bool, default=False)
 parser.add_argument('--num_workers', help="Num of workers (threads) that will retrieve the data", type=int, default=0)
+parser.add_argument('--resume', help="Resume training if there's a checkpoint available", type=bool, default=False)
 args = parser.parse_args()
 
 base_dir = args.base_dir
@@ -39,9 +45,10 @@ data_dir = args.dataset_dir
 checkpoints = args.checkpoints
 parallel = args.parallel
 workers = args.num_workers
+resume = args.resume
 # Make this an arg later
 latent_dim = 256
-print(args)
+logger.info(args)
 
 if base_dir and not os.path.exists(base_dir):
     raise FileNotFoundError("Base directory doesnt exist")
@@ -69,7 +76,6 @@ device = torch.device("cuda")
 
 # TensorBoard
 tb_writer = SummaryWriter(tensorboard_folder)
-os.system(" tensorboard --logdir " + tensorboard_folder + " &")
 
 
 # Model for the VAE
@@ -178,9 +184,9 @@ def split_data(data_dir, n_split=0.2, batch_size=256, num_workers=0):
     n_train = len(train_set) - n_val
     train_set, val_set = data.random_split(train_set, (n_train, n_val))
 
-    print('Train split: ', len(train_set))
-    print('Val split: ', len(val_set))
-    print('Test split: ', len(test_set))
+    logger.info('Train split: ', len(train_set))
+    logger.info('Val split: ', len(val_set))
+    logger.info('Test split: ', len(test_set))
 
     train_loader = data.DataLoader(
         train_set,
@@ -247,7 +253,7 @@ def train(model, optimizer, epoch, train_loader):
         train_kld += kld.item()
 
         if batch_idx % (int(len(train_loader) / 4)) == 0:
-            print('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
+            logger.info('Train Epoch: {} [{}/{} ({:.0f}%)]\tLoss: {:.6f}'.format(
                 epoch, batch_idx * len(data), len(train_loader.dataset),
                        100. * batch_idx / len(train_loader),
                 loss.item()))
@@ -257,9 +263,9 @@ def train(model, optimizer, epoch, train_loader):
     avg_mse = train_mse / datapoints
     avg_kld = train_kld / (beta * len(train_loader))
 
-    print('====> Epoch: {} Average loss: {:.8f}'.format(epoch, avg_loss))
-    print('*** Avg MSE: {:.4f}'.format(avg_mse))
-    print('*** Avg KLD: {:.8f}'.format(avg_kld * beta))
+    logger.info('====> Epoch: {} Average loss: {:.8f}'.format(epoch, avg_loss))
+    logger.info('*** Avg MSE: {:.4f}'.format(avg_mse))
+    logger.info('*** Avg KLD: {:.8f}'.format(avg_kld * beta))
     return avg_loss, avg_mse, avg_kld
 
 
@@ -293,25 +299,35 @@ def test(model, epoch, test_loader):
     test_loss /= datapoints
     test_mse /= datapoints
     test_kld /= (beta * len(test_loader))
-    print('====> Test set loss: {:.8f}'.format(test_loss))
-    print('*** Avg MSE: {:.8f}'.format(test_mse))
-    print('*** Avg KLD: {:.8f}'.format(test_kld))
+    logger.info('====> Test set loss: {:.8f}'.format(test_loss))
+    logger.info('*** Avg MSE: {:.8f}'.format(test_mse))
+    logger.info('*** Avg KLD: {:.8f}'.format(test_kld))
     return test_loss, test_mse, test_kld
 
 
 # Training starts here
 # Splitting data
-
+logger.info('** Splitting dataset')
 train_data, val_data, test_data = split_data(data_dir=data_dir, batch_size=batch_size, num_workers=workers)
 
 # Model and optimizer
 model = VAE(latent_dim)
+
 if parallel and torch.cuda.device_count() > 1:
-    print("Setting model for multiple GPUs")
-    print("GPUs: ", torch.cuda.device_count())
+    logger.info("Setting model for multiple GPUs")
+    logger.info("GPUs: " + str(torch.cuda.device_count()))
     model = nn.DataParallel(model)
 else:
     parallel = False
+
+starting_epoch = 1
+if resume:
+    logger.info('===> Loading Checkpoint <===')
+    cp_name = max(listdir(model_folder))
+    logger.info('Latest checkpoint found: ' + cp_name)
+    model.load_state_dict(torch.load(model_folder + cp_name))
+    starting_epoch = int(cp_name[3:5]) + 1
+    logger.info('===> Checkpoint Loaded <===')
 
 model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -331,13 +347,14 @@ val_trace = {
 
 # Training loop
 since = time.time()
-for epoch in range(1, epochs + 1):
-    train_loss, train_mse, train_kld = train(epoch, train_data)
+
+for epoch in range(starting_epoch, epochs + 1):
+    train_loss, train_mse, train_kld = train(model, optimizer, epoch, train_data)
     train_trace['loss'].append(train_loss)
     train_trace['mse'].append(train_mse)
     train_trace['kld'].append(train_kld)
 
-    val_loss, val_mse, val_kld = test(epoch, val_data)
+    val_loss, val_mse, val_kld = test(model, epoch, val_data)
     val_trace['loss'].append(val_loss)
     val_trace['mse'].append(val_mse)
     val_trace['kld'].append(val_kld)
@@ -372,18 +389,18 @@ for epoch in range(1, epochs + 1):
 
     # Save model every 10 epochs
     if checkpoints and (epoch % 10 == 0):
-        print("===> Saving checkpoint <===")
+        logger.info("===> Saving checkpoint <===")
         model_name = model_folder + 'vae' + str(epoch) + '.pth'
         torch.save(model.state_dict(), model_name)
 
     epoch_time = time.time() - since
     e_hours, e_minutes, e_seconds = get_time_in_hours(epoch_time)
-    print('Time elapsed {:.0f}h {:.0f}m {:.0f}s'.format(e_hours, e_minutes, e_seconds))
+    logger.info('Time elapsed {:.0f}h {:.0f}m {:.0f}s'.format(e_hours, e_minutes, e_seconds))
 
-print("**** Saving loss data ****")
+logger.info("**** Saving loss data ****")
 trace = {'train': train_trace, 'validation': val_trace}
 with open(base_dir + folder_name + 'loss.json', 'w') as file:
     json.dump(trace, file)
 
 tb_writer.close()
-print("Training finished")
+logger.info("Training finished")
