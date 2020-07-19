@@ -194,9 +194,9 @@ def split_data(data_dir, n_split=0.2, batch_size=256, num_workers=0):
     n_train = len(train_set) - n_val
     train_set, val_set = data.random_split(train_set, (n_train, n_val))
 
-    logger.info('Train split: ', len(train_set))
-    logger.info('Val split: ', len(val_set))
-    logger.info('Test split: ', len(test_set))
+    logger.info('Train split: ' + str(len(train_set)))
+    logger.info('Val split: ' + str(len(val_set)))
+    logger.info('Test split: ' + str(len(test_set)))
 
     train_loader = data.DataLoader(
         train_set,
