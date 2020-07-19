@@ -1,8 +1,8 @@
 import argparse
 import json
+import logging
 import os
 import time
-import logging
 from os import listdir
 from pathlib import Path
 
@@ -38,6 +38,7 @@ parser.add_argument('--checkpoints', help='Store model every 10 epochs', type=bo
 parser.add_argument('--parallel', help='Set true for multiple gpus', type=bool, default=False)
 parser.add_argument('--num_workers', help="Num of workers (threads) that will retrieve the data", type=int, default=0)
 parser.add_argument('--resume', help="Resume training if there's a checkpoint available", type=bool, default=False)
+parser.add_argument('--latent_dim', help='Size of the latent space', type=int, default=256)
 args = parser.parse_args()
 
 base_dir = args.base_dir
@@ -52,7 +53,8 @@ parallel = args.parallel
 workers = args.num_workers
 resume = args.resume
 # Make this an arg later
-latent_dim = 256
+latent_dim = args.latent_dim
+model = 'vae'
 logger.info(args)
 
 if base_dir and not os.path.exists(base_dir):
@@ -64,11 +66,11 @@ if data_dir and not os.path.exists(data_dir):
 if metadata_dir and not os.path.exists(metadata_dir):
     raise FileNotFoundError("Invalid path to metadata")
 
-folder_name = '/epochs' + str(epochs) + 'beta' + str(beta) + "lr" + str(learning_rate) + "/"
+folder_name = '/' + model + '/z' + str(latent_dim) + 'b' + str(beta) + 'lr' + str(learning_rate) + 'e' + str(epochs) + 'bs' + str(batch_size) + '/'
 recon_folder = base_dir + folder_name + 'reconstruction/'
 samples_folder = base_dir + folder_name + 'samples/'
 model_folder = base_dir + folder_name + 'model/'
-tensorboard_folder = base_dir + folder_name + 'tb/'
+tensorboard_folder = base_dir + 'tensorboard/' + folder_name
 
 Path(recon_folder).mkdir(parents=True, exist_ok=True)
 Path(samples_folder).mkdir(parents=False, exist_ok=True)
