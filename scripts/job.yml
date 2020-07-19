@@ -11,34 +11,40 @@ spec:
     spec:
       containers:
       - name: vaejob-container  
-        image: notandres/pytorch-custom:1.1
+        image: notandres/pytorch-custom:1.2
         command: ["python3", "/nfs/vae.py"]
-        args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--beta", "$(BETA)", "--epochs", "$(EPOCHS)", "--parallel", "$(PARALLEL)", "--num_workers", "$(NUM_WORKERS)", "--batch_size", "$(BATCH_SIZE)", "--resume", "$(RESUME)"]
+        args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--metadata_dir", "$(METADATA_DIR)",
+               "--beta", "$(BETA)", "--epochs", "$(EPOCHS)", "--latent_dim", "$(LATENT_DIM)",
+               "--num_workers", "$(NUM_WORKERS)", "--batch_size", "$(BATCH_SIZE)"]
         resources:
           requests:
-            cpu: "4000m" 
+            cpu: "6000m"
             memory: "8Gi"
-            nvidia.com/gpu: 2 
+            nvidia.com/gpu: 1
           limits:
-            cpu: "4000m" 
+            cpu: "8000m"
             memory: "16Gi"
-            nvidia.com/gpu: 2 
+            nvidia.com/gpu: 1
         volumeMounts:
         - mountPath: /nfs
           name: nfs-access
         env:
-        - name: BASE_DIR
+        - name: "BASE_DIR"
           value: "/nfs/runs"
-        - name: DATASET_DIR
+        - name: "DATASET_DIR"
           value: "/nfs/dataset/"
-        - name: BETA
+        - name: "METADATA_DIR"
+          value: "/nfs/metadata/"
+        - name: "BETA"
           value: "1"
-        - name: EPOCHS
+        - name: "LATENT_DIM"
+          value: "256"
+        - name: "EPOCHS"
           value: "200"
         - name: "PYTHONUNBUFFERED"
           value: "1"
         - name: "PARALLEL"
-          value: "True"
+          value: "False"
         - name: "NUM_WORKERS"
           value: "4"
         - name: "BATCH_SIZE"

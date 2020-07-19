@@ -19,8 +19,8 @@ from torch.utils import data
 from torch.utils.tensorboard import SummaryWriter
 from torchvision import datasets, transforms
 
-FORMAT = '%(asctime) - [%(level)-8s]: %(message)s'
-logging.basicConfig(format=FORMAT)
+FORMAT = '%(asctime)s - %(levelname)-8s: %(message)s'
+logging.basicConfig(format=FORMAT, level=logging.DEBUG)
 logger = logging.getLogger('trainer')
 
 # First some utilities so saving everything is easier later
@@ -70,12 +70,12 @@ folder_name = '/' + model + '/z' + str(latent_dim) + 'b' + str(beta) + 'lr' + st
 recon_folder = base_dir + folder_name + 'reconstruction/'
 samples_folder = base_dir + folder_name + 'samples/'
 model_folder = base_dir + folder_name + 'model/'
-tensorboard_folder = base_dir + 'tensorboard/' + folder_name
+tensorboard_folder = base_dir + '/tensorboard/' + folder_name
 
 Path(recon_folder).mkdir(parents=True, exist_ok=True)
 Path(samples_folder).mkdir(parents=False, exist_ok=True)
 Path(model_folder).mkdir(parents=False, exist_ok=True)
-Path(tensorboard_folder).mkdir(parents=False, exist_ok=True)
+Path(tensorboard_folder).mkdir(parents=True, exist_ok=True)
 # Setting manual seed for reproducibility
 torch.manual_seed(22)
 
