@@ -8,8 +8,11 @@ from pathlib import Path
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+import seaborn as sns
 import torch
 import torchvision
+import umap
 from torch import cuda
 from torch import nn, optim
 from torch.utils import data
@@ -26,6 +29,7 @@ logger = logging.getLogger('trainer')
 parser = argparse.ArgumentParser()
 parser.add_argument('--base_dir', help='Directory where results will be stored', default='')
 parser.add_argument('--dataset_dir', help='Path to the dataset to use')
+parser.add_argument('--metadata_dir', help='Path to metadata files')
 parser.add_argument('--beta', help='Beta value for the KLD', type=int, default=1)
 parser.add_argument('--lr', help='Learning rate to be used in the optimizer', type=float, default=1e-4)
 parser.add_argument('--epochs', help='Number of epochs to train for', type=int, default=50)
@@ -42,6 +46,7 @@ epochs = args.epochs
 learning_rate = args.lr
 batch_size = args.batch_size
 data_dir = args.dataset_dir
+metadata_dir = args.metadata_dir
 checkpoints = args.checkpoints
 parallel = args.parallel
 workers = args.num_workers
@@ -55,6 +60,9 @@ if base_dir and not os.path.exists(base_dir):
 
 if data_dir and not os.path.exists(data_dir):
     raise FileNotFoundError("Invalid path to dataset")
+
+if metadata_dir and not os.path.exists(metadata_dir):
+    raise FileNotFoundError("Invalid path to metadata")
 
 folder_name = '/epochs' + str(epochs) + 'beta' + str(beta) + "lr" + str(learning_rate) + "/"
 recon_folder = base_dir + folder_name + 'reconstruction/'
@@ -209,7 +217,7 @@ def split_data(data_dir, n_split=0.2, batch_size=256, num_workers=0):
         shuffle=True,
         pin_memory=pin_memory
     )
-    return train_loader, val_loader, test_loader
+    return train_loader, val_loader, test_loader, image_dataset.class_to_idx
 
 
 # Make tensor into a grid of images and then remove normalization
@@ -308,7 +316,7 @@ def test(model, epoch, test_loader):
 # Training starts here
 # Splitting data
 logger.info('** Splitting dataset')
-train_data, val_data, test_data = split_data(data_dir=data_dir, batch_size=batch_size, num_workers=workers)
+train_data, val_data, test_data, label_mapping = split_data(data_dir=data_dir, batch_size=batch_size, num_workers=workers)
 
 # Model and optimizer
 model = VAE(latent_dim)
@@ -401,6 +409,253 @@ logger.info("**** Saving loss data ****")
 trace = {'train': train_trace, 'validation': val_trace}
 with open(base_dir + folder_name + 'loss.json', 'w') as file:
     json.dump(trace, file)
-
-tb_writer.close()
 logger.info("Training finished")
+
+logger.info('===> Starting Evaluation <===')
+
+# Loading the metadata file and slicing to those folders/labels that are available
+metadata = pd.read_csv(metadata_dir + 'compound_to_cell.csv')
+metadata['Image_FileName_DAPI'] = metadata['Image_FileName_DAPI'].apply(lambda x: x.split('.tif')[0])
+compound_folder = metadata[['Image_FileName_DAPI', 'Image_Metadata_Compound']].sort_values('Image_FileName_DAPI')
+cf_id = compound_folder['Image_FileName_DAPI'].apply(lambda x: int(label_mapping.get(x, -1)))
+compound_folder['id'] = cf_id
+compound_folder = compound_folder[compound_folder.id != -1]
+comp_list = compound_folder['Image_Metadata_Compound'].unique()
+
+model.eval()
+if parallel:
+    model = model.module
+
+# Getting Z for the test set
+test_z = None
+test_labels = None
+test_loss = 0
+test_mse = 0
+test_kld = 0
+with torch.no_grad():
+    total_batches = len(test_data)
+    for batch_idx, (data, labels) in enumerate(test_data):
+        data = data.to(device)
+        mu, sigma = model.encode(data)
+        batch_z = model.reparameterize(mu, sigma).cpu()
+        recon_x = model.forward(batch_z)
+
+        loss, mse, kld = loss_function(recon_x, data, mu, sigma)
+        current_batch_size = data.size(0)
+        test_loss += loss.item() * current_batch_size
+        test_mse += mse.item() * current_batch_size
+        test_kld += kld.item()
+
+        if batch_idx % (total_batches // 10):
+            n = min(data.size(0), 8)
+            comparison = torch.cat([data[:n], recon_x[:n]]).cpu()
+            comparison = grid_and_unnormalize(comparison)
+            tb_writer.add_image("Eval/Reconstruction/recon" + str(batch_idx//(total_batches // 10)),
+                                comparison,
+                                dataformats='HWC')
+
+        if test_z is not None:
+            test_z = torch.cat((test_z, batch_z), dim=0)
+            test_labels = torch.cat((test_labels, labels))
+        else:
+            test_z = batch_z
+            test_labels = labels
+
+datapoints = len(test_data.dataset)
+test_loss /= datapoints
+test_mse /= datapoints
+test_kld /= (beta * len(test_data))
+logger.info('===> Evaluation loss: {:.8f}'.format(test_loss))
+logger.info('*** Avg MSE: {:.8f}'.format(test_mse))
+logger.info('*** Avg KLD: {:.8f}'.format(test_kld))
+
+test_compounds = []
+for label in test_labels:
+    compound = compound_folder[compound_folder.id == label.item()]['Image_Metadata_Compound'].values[0]
+    test_compounds.append(compound)
+categorical_labels = pd.Series(test_compounds, dtype="category")
+
+# Mahalanobis distance
+def compound_mean(compound):
+    selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == compound]
+    is_compound = np.isin(test_labels, selected_comps.id.values)
+    comp_matrix = test_z[is_compound].numpy()
+    mean = np.mean(comp_matrix, axis=0)
+    mean = mean.reshape(256, 1)
+    return mean
+
+
+def mahalanobis_dist(x, y, covar):
+    delta = x - y
+    mahalanobis = delta.T @ np.linalg.inv(covar) @ delta
+    mahalanobis = np.sqrt(mahalanobis)
+    return np.diag(mahalanobis)[0]
+
+
+mc_cache = {}
+covar = np.cov(test_z.numpy().T)
+dist_matrix = np.empty(0)
+for base in comp_list:
+    distances = []
+    base_mean = None
+
+    if base in mc_cache.keys():
+        base_mean = mc_cache[base]
+    else:
+        base_mean = compound_mean(base)
+        mc_cache[base] = base_mean
+
+    for target in comp_list:
+        target_mean = None
+        target_covar = None
+
+        if target in mc_cache.keys():
+            target_mean = mc_cache[target]
+        else:
+            target_mean = compound_mean(target)
+            mc_cache[target] = target_mean
+
+        mahalanobis = mahalanobis_dist(base_mean, target_mean, covar)
+        distances.append(mahalanobis)
+
+    dist_array = np.array(distances)
+
+    if dist_matrix.any():
+        dist_matrix = np.vstack((dist_matrix, dist_array))
+    else:
+        dist_matrix = dist_array
+
+plt.figure(figsize=(12, 10))
+hm = sns.heatmap(dist_matrix, xticklabels=comp_list, yticklabels=comp_list, cmap=plt.cm.viridis)
+plt.title('Mahalanobis Distance')
+md_figname = folder_name + 'mahalanobis.png'
+hm.figure.savefig(md_figname)
+tb_writer.add_figure('Distances/Mahalanobis', hm.figure)
+
+del mc_cache
+del covar
+del dist_matrix
+
+
+# KLD
+def std_matrix(x):
+    sigma = np.eye(len(x[0]))
+    std = np.std(x, axis=0)
+    np.fill_diagonal(sigma, std)
+    return sigma
+
+
+def kl_distance(x, y):
+    sigma_x = std_matrix(x)
+    sigma_y = std_matrix(y)
+    d = len(x[0])
+    mu_x = np.mean(x, axis=0)
+    mu_y = np.mean(y, axis=0)
+
+    kl = np.trace(np.linalg.inv(sigma_y) @ sigma_x)
+    kl += ((mu_y - mu_x).T @ np.linalg.inv(sigma_y) @ (mu_y - mu_x)) - d
+    kl += np.log(np.linalg.det(sigma_y) / np.linalg.det(sigma_x))
+    return kl
+
+
+def symmetric_kl(x, y):
+    kl_xy = kl_distance(x, y)
+    kl_yx = kl_distance(y, x)
+
+    return 0.5 * (kl_xy + kl_yx)
+
+
+kldist_matrix = np.empty(0)
+for x in comp_list:
+    distances = []
+    selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == x]
+    is_compound = np.isin(test_labels, selected_comps.id.values)
+    comp_x = test_z[is_compound].numpy()
+    for y in comp_list:
+        selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == y]
+        is_compound = np.isin(test_labels, selected_comps.id.values)
+        comp_y = test_z[is_compound].numpy()
+        distances.append(symmetric_kl(comp_x, comp_y))
+
+    dist_array = np.array(distances)
+    if kldist_matrix.any():
+        kldist_matrix = np.vstack((kldist_matrix, dist_array))
+    else:
+        kldist_matrix = dist_array
+
+plt.figure(figsize=(12, 10))
+hm = sns.heatmap(kldist_matrix, xticklabels=comp_list, yticklabels=comp_list, cmap=plt.cm.viridis)
+plt.title('Compound Symmetric KLD')
+kld_figname = folder_name + 'kld.png'
+hm.figure.savefig(kld_figname)
+tb_writer.add_figure('Distances/Symmetric_KL', hm.figure)
+
+
+# Interpolation test
+idx = np.argmax(kldist_matrix)
+s, _ = kldist_matrix.shape
+comp_a = idx // s
+comp_b = idx % s
+comp_a = comp_list[comp_a]
+comp_b = comp_list[comp_b]
+
+selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == comp_a]
+is_compound = np.isin(test_labels, selected_comps.id.values)
+comp_arr_a = test_z[is_compound].numpy()
+
+selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == comp_b]
+is_compound = np.isin(test_labels, selected_comps.id.values)
+comp_arr_b = test_z[is_compound].numpy()
+
+np.random.seed(22)
+base_idx = np.random.randint(len(comp_arr_a))
+target_idx = np.random.randint(len(comp_arr_b))
+
+base = torch.from_numpy(comp_arr_a[base_idx:base_idx+1]).to(device)
+target = torch.from_numpy(comp_arr_b[target_idx:target_idx+1]).to(device)
+
+diff = target - base
+recon_25 = model.decode(base + diff*0.25)
+recon_50 = model.decode(base + diff*0.50)
+recon_75 = model.decode(base + diff*0.75)
+base = model.decode(base)
+target = model.decode(target)
+interpolation = torch.cat((base, recon_25, recon_50, recon_75, target), dim=0).cpu().detach()
+interpolation = grid_and_unnormalize(interpolation)
+tb_writer.add_image("Eval/Interpolation/ip", interpolation, dataformats='HWC')
+
+del kldist_matrix
+
+
+# 2D Projection
+logger.info('Projecting with UMAP')
+reducer = umap.UMAP(random_state=22)
+z_umap = reducer.fit_transform(test_z)
+logger.info('UMAP finished')
+plt.figure(figsize=(10,10))
+scatter = sns.scatterplot(z_umap[:, 0], z_umap[:, 1], alpha=0.9, hue=categorical_labels.cat.codes, palette=sns.hls_palette(len(comp_list)))
+plt.title('All compounds')
+tb_writer.add_figure('Projection/UMAP', scatter.figure)
+
+# Plotting scatter and density plots
+x = z_umap[:, 0]
+y = z_umap[:, 1]
+logger.info('Creating UMAP plots')
+for compound in comp_list:
+    selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == compound]
+    is_compound = np.isin(test_labels, selected_comps.id.values)
+    x = x[is_compound]
+    y = y[is_compound]
+
+    plt.figure(figsize=(10, 10))
+    plt.title(compound + ' UMAP')
+    ax = sns.scatterplot(x, y, alpha=0.7, palette=sns.cubehelix_palette())
+    tb_writer.add_figure('Scatterplot/' + compound, ax.figure)
+    plt.figure(figsize=(10, 10))
+    plt.title(compound + ' Density Plot')
+    ax = sns.kdeplot(x, y, legend=True, shade=True, cmap=sns.cubehelix_palette(light=1, as_cmap=True))
+    tb_writer.add_figure('DensityPlot/' + compound, ax.figure)
+
+logger.info('Evaluation finished')
+tb_writer.close()
+
