@@ -12,7 +12,7 @@ spec:
       containers:
       - name: vaejob-container  
         image: notandres/pytorch-custom:1.2
-        command: ["python3", "/nfs/vae.py"]
+        command: ["python3", "/nfs/trainer.py"]
         args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--metadata_dir", "$(METADATA_DIR)",
                "--beta", "$(BETA)", "--epochs", "$(EPOCHS)", "--latent_dim", "$(LATENT_DIM)",
                "--num_workers", "$(NUM_WORKERS)", "--batch_size", "$(BATCH_SIZE)"]

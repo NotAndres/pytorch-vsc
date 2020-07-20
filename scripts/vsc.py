@@ -2,10 +2,11 @@ import torch
 from torch import nn
 
 
-class VAE(nn.Module):
-    def __init__(self, latent_dim):
-        super(VAE, self).__init__()
+class VSC(nn.Module):
+    def __init__(self, latent_dim, c):
+        super(VSC, self).__init__()
         self.latent_dim = latent_dim
+        self.c = c
 
         # Encoder
         self.encoder_conv1 = self.getConvolutionLayer(3, 128)
@@ -16,6 +17,10 @@ class VAE(nn.Module):
 
         self.encoder_fc1 = nn.Linear(4608, self.latent_dim)
         self.encoder_fc2 = nn.Linear(4608, self.latent_dim)
+        self.encoder_fc3 = nn.Linear(4608, self.latent_dim)
+        self.encoder_sigmoid = nn.Sigmoid()
+
+        self.reparam_sigmoid = nn.Sigmoid()
 
         # Decoder
         self.decoder_fc1 = nn.Sequential(
@@ -53,14 +58,19 @@ class VAE(nn.Module):
         x = self.flatten(x)
         mu = self.encoder_fc1(x)
         sigma = self.encoder_fc2(x)
+        gamma = self.encoder_fc3(x)
+        gamma = self.encoder_sigmoid(gamma)
 
-        return mu, sigma
+        return mu, sigma, gamma
 
-    def reparameterize(self, mu, logvar):
+    def reparameterize(self, mu, logvar, gamma):
         std = torch.exp(0.5 * logvar)
         # Keeps shape, samples from normal dist with mean 0 and variance 1
         eps = torch.randn_like(std)
-        return mu + eps * std
+        # Uniform dist
+        eta = torch.randn_like(std)
+        slab = self.reparam_sigmoid(self.c * (eta - 1 + gamma))
+        return slab * (mu + eps * std)
 
     def decode(self, z):
         z = self.decoder_fc1(z)
@@ -71,15 +81,27 @@ class VAE(nn.Module):
         return recon
 
     def forward(self, x):
-        mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
-        return self.decode(z), mu, logvar
+        mu, logvar, gamma = self.encode(x)
+        z = self.reparameterize(mu, logvar, gamma)
+        return self.decode(z), mu, logvar, gamma
+
+    def update_c(self, c):
+        self.c = c
 
 
-# Loss Function definition
-def loss_function(recon_x, x, mu, logvar):
-    mse = torch.mean(torch.sum((x - recon_x).pow(2), dim=(1, 2, 3)))
-    kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) * beta
+# Gamma = Spike
+def loss_function(recon_x, x, mu, logvar, gamma, alpha=0.5, beta=1):
+    alpha = torch.tensor(alpha)
+    gamma = torch.clamp(gamma, 1e-6, 1 - 1e-6)
 
-    loss = mse + kld
-    return loss, mse, kld
+    mse = torch.sum(torch.sum((x - recon_x).pow(2), dim=(1, 2, 3)))
+
+    slab = torch.sum((0.5 * gamma) * (1 + logvar - mu.pow(2) - logvar.exp()))
+    spike_a = (1 - gamma) * (torch.log(1 - alpha) - torch.log(1 - gamma))
+    spike_b = gamma * (torch.log(alpha) - torch.log(gamma))
+
+    spike = torch.sum(spike_a + spike_b)
+    slab = torch.sum(slab)
+    kld = -1 * (spike + slab)
+    loss = mse + kld * beta
+    return loss, mse, kld, -slab, -spike
