@@ -6,6 +6,11 @@ import time
 from os import listdir
 from pathlib import Path
 
+from .vae import VAE
+from .vae import loss_function as vae_loss
+from .vsc import VSC
+from .vsc import loss_function as vsc_loss
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -30,15 +35,21 @@ parser = argparse.ArgumentParser()
 parser.add_argument('--base_dir', help='Directory where results will be stored', default='')
 parser.add_argument('--dataset_dir', help='Path to the dataset to use')
 parser.add_argument('--metadata_dir', help='Path to metadata files')
+parser.add_argument('--model', help="Model to use for training", type=str, default='vae')
+
+parser.add_argument('--latent_dim', help='Size of the latent space', type=int, default=256)
 parser.add_argument('--beta', help='Beta value for the KLD', type=int, default=1)
 parser.add_argument('--lr', help='Learning rate to be used in the optimizer', type=float, default=1e-4)
 parser.add_argument('--epochs', help='Number of epochs to train for', type=int, default=50)
 parser.add_argument('--batch_size', help='Size of mini batches', type=int, default=128)
+parser.add_argument('--alpha', help='Alpha value for VSC', type=float, default=0.5)
+parser.add_argument('--c', help='Starting C value', type=int, default=50)
+
 parser.add_argument('--checkpoints', help='Store model every 10 epochs', type=bool, default=True)
 parser.add_argument('--parallel', help='Set true for multiple gpus', type=bool, default=False)
 parser.add_argument('--num_workers', help="Num of workers (threads) that will retrieve the data", type=int, default=0)
 parser.add_argument('--resume', help="Resume training if there's a checkpoint available", type=bool, default=False)
-parser.add_argument('--latent_dim', help='Size of the latent space', type=int, default=256)
+
 args = parser.parse_args()
 
 base_dir = args.base_dir
@@ -46,15 +57,20 @@ beta = args.beta
 epochs = args.epochs
 learning_rate = args.lr
 batch_size = args.batch_size
+# VSC params
+c = args.c
+alpha = args.alpha
+
 data_dir = args.dataset_dir
 metadata_dir = args.metadata_dir
+
 checkpoints = args.checkpoints
 parallel = args.parallel
 workers = args.num_workers
 resume = args.resume
 # Make this an arg later
 latent_dim = args.latent_dim
-model = 'vae'
+model_type = args.model
 logger.info(args)
 
 if base_dir and not os.path.exists(base_dir):
@@ -66,7 +82,12 @@ if data_dir and not os.path.exists(data_dir):
 if metadata_dir and not os.path.exists(metadata_dir):
     raise FileNotFoundError("Invalid path to metadata")
 
-folder_name = '/' + model + '/z' + str(latent_dim) + 'b' + str(beta) + 'lr' + str(learning_rate) + 'e' + str(epochs) + 'bs' + str(batch_size) + '/'
+folder_name = '/' + model_type + '/'
+is_vsc = model_type == 'vsc'
+if is_vsc:
+    folder_name += 'c' + str(c) + 'a' + str(alpha)
+folder_name += 'z' + str(latent_dim) + 'b' + str(beta) + 'lr' + str(learning_rate) + 'bs' + str(batch_size) + '/'
+
 recon_folder = base_dir + folder_name + 'reconstruction/'
 samples_folder = base_dir + folder_name + 'samples/'
 model_folder = base_dir + folder_name + 'model/'
@@ -86,91 +107,6 @@ device = torch.device("cuda")
 
 # TensorBoard
 tb_writer = SummaryWriter(tensorboard_folder)
-
-
-# Model for the VAE
-class VAE(nn.Module):
-    def __init__(self, latent_dim):
-        super(VAE, self).__init__()
-        self.latent_dim = latent_dim
-
-        # Encoder
-        self.encoder_conv1 = self.getConvolutionLayer(3, 128)
-        self.encoder_conv2 = self.getConvolutionLayer(128, 64)
-        self.encoder_conv3 = self.getConvolutionLayer(64, 32)
-
-        self.flatten = nn.Flatten()
-
-        self.encoder_fc1 = nn.Linear(4608, self.latent_dim)
-        self.encoder_fc2 = nn.Linear(4608, self.latent_dim)
-
-        # Decoder
-        self.decoder_fc1 = nn.Sequential(
-            nn.Linear(self.latent_dim, 4608),
-            nn.ReLU()
-        )
-        # Reshape to 32x12x12
-        self.decoder_upsampler1 = nn.Upsample(scale_factor=(2, 2), mode='nearest')
-
-        self.decoder_deconv1 = nn.Sequential(
-            nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
-            nn.Upsample(scale_factor=(2, 2), mode='nearest')
-        )
-        # 48x48x64
-        self.decoder_deconv2 = nn.Sequential(
-            nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
-            nn.Upsample(scale_factor=(2, 2), mode='nearest')
-        )
-
-        self.decoder_conv1 = nn.Conv2d(in_channels=128, out_channels=3, kernel_size=3, stride=1, padding=1)
-        # 96x96x128
-
-    def getConvolutionLayer(self, in_channels, out_channels):
-        return nn.Sequential(
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2)
-        )
-
-    def encode(self, x):
-        x = self.encoder_conv1(x)
-        x = self.encoder_conv2(x)
-        x = self.encoder_conv3(x)
-
-        x = self.flatten(x)
-        mu = self.encoder_fc1(x)
-        sigma = self.encoder_fc2(x)
-
-        return mu, sigma
-
-    def reparameterize(self, mu, logvar):
-        std = torch.exp(0.5 * logvar)
-        # Keeps shape, samples from normal dist with mean 0 and variance 1
-        eps = torch.randn_like(std)
-        return mu + eps * std
-
-    def decode(self, z):
-        z = self.decoder_fc1(z)
-        z = self.decoder_upsampler1(z.view(-1, 32, 12, 12))
-        z = self.decoder_deconv1(z)
-        z = self.decoder_deconv2(z)
-        recon = self.decoder_conv1(z)
-        return recon
-
-    def forward(self, x):
-        mu, logvar = self.encode(x)
-        z = self.reparameterize(mu, logvar)
-        return self.decode(z), mu, logvar
-
-
-# Loss Function definition
-def loss_function(recon_x, x, mu, logvar):
-    mse = torch.mean(torch.sum((x - recon_x).pow(2), dim=(1, 2, 3)))
-    kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) * beta
-
-    loss = mse + kld
-    return loss, mse, kld
-
 
 # Image processing utilities
 dataset_mean = (0.0302, 0.0660, 0.0518)
@@ -248,16 +184,25 @@ def train(model, optimizer, epoch, train_loader):
     train_loss = 0
     train_mse = 0
     train_kld = 0
+    train_slab = 0
+    train_spike = 0
     for batch_idx, (data, _) in enumerate(train_loader):
         data = data.to(device)
         optimizer.zero_grad()
-        recon_batch, mu, logvar = model(data)
-        loss, mse, kld = loss_function(recon_batch, data, mu, logvar)
+        current_batch_size = data.size(0)
+        fwd_args = model(data)
+        if is_vsc:
+            recon_batch, mu, logvar, gamma = fwd_args
+            loss, mse, kld, slab, spike = vsc_loss(recon_batch, data, mu, logvar, gamma, alpha=alpha)
+            train_slab += slab
+            train_spike += spike
+        else:
+            recon_batch, mu, logvar = fwd_args
+            loss, mse, kld = vae_loss(recon_batch, data, mu, logvar)
 
         loss.backward()
         optimizer.step()
 
-        current_batch_size = len(data)
         train_loss += loss.item() * current_batch_size
         train_mse += mse.item() * current_batch_size
         train_kld += kld.item()
@@ -276,7 +221,13 @@ def train(model, optimizer, epoch, train_loader):
     logger.info('====> Epoch: {} Average loss: {:.8f}'.format(epoch, avg_loss))
     logger.info('*** Avg MSE: {:.4f}'.format(avg_mse))
     logger.info('*** Avg KLD: {:.8f}'.format(avg_kld * beta))
-    return avg_loss, avg_mse, avg_kld
+    if is_vsc:
+        train_slab /= (beta * len(train_loader))
+        train_spike /= (beta * len(train_loader))
+        logger.info('* Avg Slab: {:.8f}'.format(train_slab))
+        logger.info('* Avg Spike: {:.8f}'.format(train_spike))
+
+    return avg_loss, avg_mse, avg_kld, train_slab, train_spike
 
 
 def test(model, epoch, test_loader):
@@ -284,13 +235,22 @@ def test(model, epoch, test_loader):
     test_loss = 0
     test_mse = 0
     test_kld = 0
+    test_slab = 0
+    test_spike = 0
     with torch.no_grad():
         for i, (data, _) in enumerate(test_loader):
             data = data.to(device)
-            recon_batch, mu, logvar = model(data)
-            loss, mse, kld = loss_function(recon_batch, data, mu, logvar)
-
             current_batch_size = data.size(0)
+            fwd_args = model(data)
+            if is_vsc:
+                recon_batch, mu, logvar, gamma = fwd_args
+                loss, mse, kld, slab, spike = vsc_loss(recon_batch, data, mu, logvar, gamma, alpha=alpha)
+                test_slab += slab
+                test_spike += spike
+            else:
+                recon_batch, mu, logvar = fwd_args
+                loss, mse, kld = vae_loss(recon_batch, data, mu, logvar)
+
             test_loss += loss.item() * current_batch_size
             test_mse += mse.item() * current_batch_size
             test_kld += kld.item()
@@ -309,10 +269,16 @@ def test(model, epoch, test_loader):
     test_loss /= datapoints
     test_mse /= datapoints
     test_kld /= (beta * len(test_loader))
+
     logger.info('====> Test set loss: {:.8f}'.format(test_loss))
     logger.info('*** Avg MSE: {:.8f}'.format(test_mse))
     logger.info('*** Avg KLD: {:.8f}'.format(test_kld))
-    return test_loss, test_mse, test_kld
+    if is_vsc:
+        test_slab /= (beta * len(test_loader))
+        test_spike /= (beta * len(test_loader))
+        logger.info('* Avg Slab: {:.8f}'.format(test_slab))
+        logger.info('* Avg Spike: {:.8f}'.format(test_spike))
+    return test_loss, test_mse, test_kld, test_slab, test_spike
 
 
 # Training starts here
@@ -321,7 +287,11 @@ logger.info('** Splitting dataset')
 train_data, val_data, test_data, label_mapping = split_data(data_dir=data_dir, batch_size=batch_size, num_workers=workers)
 
 # Model and optimizer
-model = VAE(latent_dim)
+model = None
+if is_vsc:
+    model = VSC(latent_dim, c)
+else:
+    model = VAE(latent_dim)
 
 if parallel and torch.cuda.device_count() > 1:
     logger.info("Setting model for multiple GPUs")
@@ -343,46 +313,31 @@ model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 # dicts to keep track of loss
-train_trace = {
-    'loss': [],
-    'mse': [],
-    'kld': []
-}
-
-val_trace = {
-    'loss': [],
-    'mse': [],
-    'kld': []
-}
+keys = ['Total', 'MSE', 'KLD']
+if is_vsc:
+    keys.append('Slab')
+    keys.append('Spike')
+train_trace = {}
+val_trace = {}
+for key in keys:
+    train_trace[key] = []
+    val_trace[key] = []
 
 # Training loop
 since = time.time()
 
 for epoch in range(starting_epoch, epochs + 1):
-    train_loss, train_mse, train_kld = train(model, optimizer, epoch, train_data)
-    train_trace['loss'].append(train_loss)
-    train_trace['mse'].append(train_mse)
-    train_trace['kld'].append(train_kld)
+    train_loss = train(model, optimizer, epoch, train_data)
+    val_loss = test(model, epoch, val_data)
 
-    val_loss, val_mse, val_kld = test(model, epoch, val_data)
-    val_trace['loss'].append(val_loss)
-    val_trace['mse'].append(val_mse)
-    val_trace['kld'].append(val_kld)
+    for idx, term in enumerate(keys):
+        train_trace[term].append(train_loss[idx])
+        val_trace[term].append(val_loss[idx])
 
-    tb_writer.add_scalars('Loss/Total', {
-        'train': train_loss,
-        'test': val_loss
-    }, epoch)
-
-    tb_writer.add_scalars('Loss/MSE', {
-        'train': train_mse,
-        'test': val_mse
-    }, epoch)
-
-    tb_writer.add_scalars('Loss/KLD', {
-        'train': train_kld,
-        'test': val_kld
-    }, epoch)
+        tb_writer.add_scalars('Loss/' + term, {
+            'train': train_loss[idx],
+            'test': val_loss[idx],
+        })
 
     with torch.no_grad():
         sample = torch.randn(4, latent_dim).to(device)
@@ -400,7 +355,7 @@ for epoch in range(starting_epoch, epochs + 1):
     # Save model every 10 epochs
     if checkpoints and (epoch % 10 == 0):
         logger.info("===> Saving checkpoint <===")
-        model_name = model_folder + 'vae' + str(epoch) + '.pth'
+        model_name = model_folder + model_type + str(epoch) + '.pth'
         torch.save(model.state_dict(), model_name)
 
     epoch_time = time.time() - since
@@ -434,16 +389,23 @@ test_labels = None
 test_loss = 0
 test_mse = 0
 test_kld = 0
+test_slab = 0
+test_spike = 0
 with torch.no_grad():
     total_batches = len(test_data)
     for batch_idx, (data, labels) in enumerate(test_data):
         data = data.to(device)
-        mu, sigma = model.encode(data)
-        batch_z = model.reparameterize(mu, sigma).cpu()
+        encode_args = model.encode(data)
+        batch_z = model.reparameterize(*encode_args).cpu()
         recon_x = model.forward(batch_z)
-
-        loss, mse, kld = loss_function(recon_x, data, mu, sigma)
         current_batch_size = data.size(0)
+        if is_vsc:
+            loss, mse, kld, slab, spike = vsc_loss(recon_x, data, *encode_args, alpha=alpha)
+            test_slab += slab
+            test_spike += spike
+        else:
+            loss, mse, kld = vae_loss(recon_x, data, *encode_args)
+
         test_loss += loss.item() * current_batch_size
         test_mse += mse.item() * current_batch_size
         test_kld += kld.item()
@@ -470,6 +432,11 @@ test_kld /= (beta * len(test_data))
 logger.info('===> Evaluation loss: {:.8f}'.format(test_loss))
 logger.info('*** Avg MSE: {:.8f}'.format(test_mse))
 logger.info('*** Avg KLD: {:.8f}'.format(test_kld))
+if is_vsc:
+    test_slab /= (beta * len(test_data))
+    test_spike /= (beta * len(test_data))
+    logger.info('* Avg Slab: {:.8f}'.format(test_slab))
+    logger.info('* Avg Spike: {:.8f}'.format(test_spike))
 
 test_compounds = []
 for label in test_labels:

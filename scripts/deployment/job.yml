@@ -1,13 +1,13 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: vaejob
+  name: vaejobtest
   namespace: 2446502gproject # Change this
 spec:
   backoffLimit: 0
   template:        
     metadata:
-      name: vaejob
+      name: vaejobtest
     spec:
       containers:
       - name: vaejob-container  
@@ -15,7 +15,8 @@ spec:
         command: ["python3", "/nfs/trainer.py"]
         args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--metadata_dir", "$(METADATA_DIR)",
                "--beta", "$(BETA)", "--epochs", "$(EPOCHS)", "--latent_dim", "$(LATENT_DIM)",
-               "--num_workers", "$(NUM_WORKERS)", "--batch_size", "$(BATCH_SIZE)"]
+               "--num_workers", "$(NUM_WORKERS)", "--batch_size", "$(BATCH_SIZE)",
+                "--resume", "$(RESUME)"]
         resources:
           requests:
             cpu: "6000m"
@@ -38,9 +39,9 @@ spec:
         - name: "BETA"
           value: "1"
         - name: "LATENT_DIM"
-          value: "256"
+          value: "128"
         - name: "EPOCHS"
-          value: "200"
+          value: "50"
         - name: "PYTHONUNBUFFERED"
           value: "1"
         - name: "PARALLEL"
@@ -50,7 +51,7 @@ spec:
         - name: "BATCH_SIZE"
           value: "128"
         - name: "RESUME"
-          value: "False"
+          value: "True"
       volumes:
       - name: nfs-access
         persistentVolumeClaim: 

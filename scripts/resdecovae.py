@@ -22,6 +22,7 @@ class VAE(nn.Module):
             nn.Linear(self.latent_dim, 4608),
             nn.ReLU()
         )
+
         # Reshape to 32x12x12
         self.decoder_upsampler1 = nn.Upsample(scale_factor=(2, 2), mode='nearest')
 
@@ -29,14 +30,22 @@ class VAE(nn.Module):
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
             nn.Upsample(scale_factor=(2, 2), mode='nearest')
         )
+
         # 48x48x64
         self.decoder_deconv2 = nn.Sequential(
             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
             nn.Upsample(scale_factor=(2, 2), mode='nearest')
         )
 
+        # 96x96x128
         self.decoder_conv1 = nn.Conv2d(in_channels=128, out_channels=3, kernel_size=3, stride=1, padding=1)
-        # 96x96x3
+
+        self.resdeco_conv = nn.Sequential(
+            nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, stride=1),
+            nn.ReLU,
+            nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, stride=1),
+            nn.ReLU
+        )
 
     def getConvolutionLayer(self, in_channels, out_channels):
         return nn.Sequential(

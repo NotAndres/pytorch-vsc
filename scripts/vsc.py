@@ -94,7 +94,7 @@ def loss_function(recon_x, x, mu, logvar, gamma, alpha=0.5, beta=1):
     alpha = torch.tensor(alpha)
     gamma = torch.clamp(gamma, 1e-6, 1 - 1e-6)
 
-    mse = torch.sum(torch.sum((x - recon_x).pow(2), dim=(1, 2, 3)))
+    mse = 0.5 * torch.mean(torch.sum((x - recon_x).pow(2), dim=(1, 2, 3)))
 
     slab = torch.sum((0.5 * gamma) * (1 + logvar - mu.pow(2) - logvar.exp()))
     spike_a = (1 - gamma) * (torch.log(1 - alpha) - torch.log(1 - gamma))
