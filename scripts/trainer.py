@@ -59,6 +59,7 @@ learning_rate = args.lr
 batch_size = args.batch_size
 # VSC params
 c = args.c
+end_c = 250
 alpha = args.alpha
 
 data_dir = args.dataset_dir
@@ -332,10 +333,13 @@ for key in keys:
 # Training loop
 since = time.time()
 
+c_step = (end_c - c) / epochs
+c = c + c_step * (starting_epoch - 1)
+
 for epoch in range(starting_epoch, epochs + 1):
 
     if is_vsc:
-        c += 1
+        c += c_step
         model.update_c(c)
 
     train_loss = train(model, optimizer, epoch, train_data)
