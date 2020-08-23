@@ -77,7 +77,7 @@ class VAE(nn.Module):
 
 
 # Loss Function definition
-def loss_function(recon_x, x, mu, logvar):
+def loss_function(recon_x, x, mu, logvar, beta=1):
     mse = torch.mean(torch.sum((x - recon_x).pow(2), dim=(1, 2, 3)))
     kld = -0.5 * torch.sum(1 + logvar - mu.pow(2) - logvar.exp()) * beta
 

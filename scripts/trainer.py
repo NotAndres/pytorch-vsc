@@ -6,10 +6,10 @@ import time
 from os import listdir
 from pathlib import Path
 
-from .vae import VAE
-from .vae import loss_function as vae_loss
-from .vsc import VSC
-from .vsc import loss_function as vsc_loss
+from vae import VAE
+from vae import loss_function as vae_loss
+from vsc import VSC
+from vsc import loss_function as vsc_loss
 
 import matplotlib.pyplot as plt
 import numpy as np
@@ -25,7 +25,7 @@ from torch.utils.tensorboard import SummaryWriter
 from torchvision import datasets, transforms
 
 FORMAT = '%(asctime)s - %(levelname)-8s: %(message)s'
-logging.basicConfig(format=FORMAT, level=logging.DEBUG)
+logging.basicConfig(format=FORMAT, level=logging.INFO)
 logger = logging.getLogger('trainer')
 
 # First some utilities so saving everything is easier later
@@ -303,11 +303,16 @@ else:
 starting_epoch = 1
 if resume:
     logger.info('===> Loading Checkpoint <===')
-    cp_name = max(listdir(model_folder))
+    cp_name = listdir(model_folder)
+    model_number = max([int(item.split('.pth')[0][3:]) for item in cp_name])
+    cp_name = model_type + str(model_number) + '.pth'
+
     logger.info('Latest checkpoint found: ' + cp_name)
     model.load_state_dict(torch.load(model_folder + cp_name))
-    starting_epoch = int(cp_name[3:5]) + 1
+    starting_epoch = model_number + 1
     logger.info('===> Checkpoint Loaded <===')
+    denormal = torch.set_flush_denormal(True)
+    logger.info('Flushing denormal:' + str(denormal))
 
 model.to(device)
 optimizer = optim.Adam(model.parameters(), lr=learning_rate)
@@ -317,6 +322,7 @@ keys = ['Total', 'MSE', 'KLD']
 if is_vsc:
     keys.append('Slab')
     keys.append('Spike')
+    model.update_c(starting_epoch - 1 + c)
 train_trace = {}
 val_trace = {}
 for key in keys:
@@ -327,17 +333,22 @@ for key in keys:
 since = time.time()
 
 for epoch in range(starting_epoch, epochs + 1):
+
+    if is_vsc:
+        c += 1
+        model.update_c(c)
+
     train_loss = train(model, optimizer, epoch, train_data)
     val_loss = test(model, epoch, val_data)
 
     for idx, term in enumerate(keys):
-        train_trace[term].append(train_loss[idx])
-        val_trace[term].append(val_loss[idx])
+        train_trace[term].append(train_loss[idx].item())
+        val_trace[term].append(val_loss[idx].item())
 
         tb_writer.add_scalars('Loss/' + term, {
             'train': train_loss[idx],
             'test': val_loss[idx],
-        })
+        }, epoch)
 
     with torch.no_grad():
         sample = torch.randn(4, latent_dim).to(device)
@@ -346,14 +357,14 @@ for epoch in range(starting_epoch, epochs + 1):
         else:
             sample = model.decode(sample).cpu()
         sample = grid_and_unnormalize(sample)
-        tb_writer.add_image("Reconstruction/recon_" + str(epoch), sample, epoch, dataformats='HWC')
+        tb_writer.add_image("Sample/sample_" + str(epoch), sample, epoch, dataformats='HWC')
 
         plt.imshow(sample)
         plt.savefig(samples_folder + 'sample_' + str(epoch) + '.png')
         plt.close()
 
     # Save model every 10 epochs
-    if checkpoints and (epoch % 10 == 0):
+    if checkpoints and (is_vsc or (epoch % 10 == 0)):
         logger.info("===> Saving checkpoint <===")
         model_name = model_folder + model_type + str(epoch) + '.pth'
         torch.save(model.state_dict(), model_name)
@@ -362,11 +373,12 @@ for epoch in range(starting_epoch, epochs + 1):
     e_hours, e_minutes, e_seconds = get_time_in_hours(epoch_time)
     logger.info('Time elapsed {:.0f}h {:.0f}m {:.0f}s'.format(e_hours, e_minutes, e_seconds))
 
-logger.info("**** Saving loss data ****")
-trace = {'train': train_trace, 'validation': val_trace}
-with open(base_dir + folder_name + 'loss.json', 'w') as file:
-    json.dump(trace, file)
-logger.info("Training finished")
+if starting_epoch < epochs:
+    logger.info("**** Saving loss data ****")
+    trace = {'train': train_trace, 'validation': val_trace}
+    with open(base_dir + folder_name + 'loss.json', 'w') as file:
+        json.dump(trace, file)
+    logger.info("Training finished")
 
 logger.info('===> Starting Evaluation <===')
 
@@ -396,15 +408,15 @@ with torch.no_grad():
     for batch_idx, (data, labels) in enumerate(test_data):
         data = data.to(device)
         encode_args = model.encode(data)
-        batch_z = model.reparameterize(*encode_args).cpu()
-        recon_x = model.forward(batch_z)
+        batch_z = model.reparameterize(*encode_args)
+        recon_x = model.decode(batch_z)
         current_batch_size = data.size(0)
         if is_vsc:
             loss, mse, kld, slab, spike = vsc_loss(recon_x, data, *encode_args, alpha=alpha)
             test_slab += slab
             test_spike += spike
         else:
-            loss, mse, kld = vae_loss(recon_x, data, *encode_args)
+            loss, mse, kld = vae_loss(recon_x, data, *encode_args, beta=beta)
 
         test_loss += loss.item() * current_batch_size
         test_mse += mse.item() * current_batch_size
@@ -417,7 +429,7 @@ with torch.no_grad():
             tb_writer.add_image("Eval/Reconstruction/recon" + str(batch_idx//(total_batches // 10)),
                                 comparison,
                                 dataformats='HWC')
-
+        batch_z = batch_z.cpu()
         if test_z is not None:
             test_z = torch.cat((test_z, batch_z), dim=0)
             test_labels = torch.cat((test_labels, labels))
@@ -443,6 +455,12 @@ for label in test_labels:
     compound = compound_folder[compound_folder.id == label.item()]['Image_Metadata_Compound'].values[0]
     test_compounds.append(compound)
 categorical_labels = pd.Series(test_compounds, dtype="category")
+
+folder_name = base_dir + folder_name
+sns.set(font_scale=0.5)
+
+logger.info('Calculating Mahalanobis distance')
+
 
 # Mahalanobis distance
 def compound_mean(compound):
@@ -499,11 +517,13 @@ hm = sns.heatmap(dist_matrix, xticklabels=comp_list, yticklabels=comp_list, cmap
 plt.title('Mahalanobis Distance')
 md_figname = folder_name + 'mahalanobis.png'
 hm.figure.savefig(md_figname)
-tb_writer.add_figure('Distances/Mahalanobis', hm.figure)
+tb_writer.add_figure('Distances/Mahalanobis', hm.figure, global_step=epochs)
 
 del mc_cache
 del covar
 del dist_matrix
+
+logger.info('Calculating Symmetric KLD')
 
 
 # KLD
@@ -557,8 +577,7 @@ hm = sns.heatmap(kldist_matrix, xticklabels=comp_list, yticklabels=comp_list, cm
 plt.title('Compound Symmetric KLD')
 kld_figname = folder_name + 'kld.png'
 hm.figure.savefig(kld_figname)
-tb_writer.add_figure('Distances/Symmetric_KL', hm.figure)
-
+tb_writer.add_figure('Distances/Symmetric_KL', hm.figure, global_step=epochs)
 
 # Interpolation test
 idx = np.argmax(kldist_matrix)
@@ -591,39 +610,44 @@ base = model.decode(base)
 target = model.decode(target)
 interpolation = torch.cat((base, recon_25, recon_50, recon_75, target), dim=0).cpu().detach()
 interpolation = grid_and_unnormalize(interpolation)
-tb_writer.add_image("Eval/Interpolation/ip", interpolation, dataformats='HWC')
+tb_writer.add_image("Eval/Interpolation/ip", interpolation, dataformats='HWC', global_step=epochs)
 
 del kldist_matrix
 
 
 # 2D Projection
 logger.info('Projecting with UMAP')
-reducer = umap.UMAP(random_state=22)
+reducer = umap.UMAP(low_memory=True, random_state=22)
 z_umap = reducer.fit_transform(test_z)
 logger.info('UMAP finished')
 plt.figure(figsize=(10,10))
-scatter = sns.scatterplot(z_umap[:, 0], z_umap[:, 1], alpha=0.9, hue=categorical_labels.cat.codes, palette=sns.hls_palette(len(comp_list)))
+scatter = sns.scatterplot(z_umap[:, 0], z_umap[:, 1], alpha=0.9, size=1, hue=categorical_labels.cat.codes, palette=sns.hls_palette(len(comp_list)))
 plt.title('All compounds')
-tb_writer.add_figure('Projection/UMAP', scatter.figure)
+tb_writer.add_figure('Projection/UMAP', scatter.figure, global_step=epochs)
+
+plt.figure(figsize=(10,10))
+plt.title('All compounds')
+ax = sns.kdeplot(z_umap[:, 0], z_umap[:, 1], legend=True, shade=True, cmap=sns.cubehelix_palette(light=1, as_cmap=True))
+tb_writer.add_figure('Projection/DensityPlot', ax.figure, global_step=epochs)
+
 
 # Plotting scatter and density plots
-x = z_umap[:, 0]
-y = z_umap[:, 1]
 logger.info('Creating UMAP plots')
 for compound in comp_list:
     selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == compound]
     is_compound = np.isin(test_labels, selected_comps.id.values)
-    x = x[is_compound]
-    y = y[is_compound]
+    comp_slice = z_umap[is_compound]
+    x = comp_slice[:, 0]
+    y = comp_slice[:, 1]
 
     plt.figure(figsize=(10, 10))
     plt.title(compound + ' UMAP')
-    ax = sns.scatterplot(x, y, alpha=0.7, palette=sns.cubehelix_palette())
-    tb_writer.add_figure('Scatterplot/' + compound, ax.figure)
+    ax = sns.scatterplot(x, y, alpha=0.7, size=1, palette=sns.cubehelix_palette())
+    tb_writer.add_figure('Scatterplot/' + compound, ax.figure, global_step=epochs)
     plt.figure(figsize=(10, 10))
     plt.title(compound + ' Density Plot')
     ax = sns.kdeplot(x, y, legend=True, shade=True, cmap=sns.cubehelix_palette(light=1, as_cmap=True))
-    tb_writer.add_figure('DensityPlot/' + compound, ax.figure)
+    tb_writer.add_figure('DensityPlot/' + compound, ax.figure, global_step=epochs)
 
 logger.info('Evaluation finished')
 tb_writer.close()

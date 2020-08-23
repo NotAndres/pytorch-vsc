@@ -1,22 +1,22 @@
 apiVersion: batch/v1
 kind: Job
 metadata:
-  name: vaejobtest
+  name: vsc
   namespace: 2446502gproject # Change this
 spec:
   backoffLimit: 0
-  template:        
+  template:
     metadata:
-      name: vaejobtest
+      name: vsc
     spec:
       containers:
-      - name: vaejob-container  
-        image: notandres/pytorch-custom:1.2
-        command: ["python3", "/nfs/trainer.py"]
+      - name: vaejob-container
+        image: notandres/pytorch-custom:1.7
+        command: ["python3", "/nfs/scripts/trainer.py"]
         args: ["--base_dir", "$(BASE_DIR)", "--dataset_dir", "$(DATASET_DIR)", "--metadata_dir", "$(METADATA_DIR)",
                "--beta", "$(BETA)", "--epochs", "$(EPOCHS)", "--latent_dim", "$(LATENT_DIM)",
                "--num_workers", "$(NUM_WORKERS)", "--batch_size", "$(BATCH_SIZE)",
-                "--resume", "$(RESUME)"]
+               "--alpha", "$(ALPHA)", "--c", "$(C)", "--model", "$(MODEL)"]
         resources:
           requests:
             cpu: "6000m"
@@ -29,6 +29,8 @@ spec:
         volumeMounts:
         - mountPath: /nfs
           name: nfs-access
+        - mountPath: /dev/shm/
+          name: dshm
         env:
         - name: "BASE_DIR"
           value: "/nfs/runs"
@@ -36,12 +38,14 @@ spec:
           value: "/nfs/dataset/"
         - name: "METADATA_DIR"
           value: "/nfs/metadata/"
+        - name: "MODEL"
+          value: "vae"
         - name: "BETA"
           value: "1"
         - name: "LATENT_DIM"
           value: "128"
         - name: "EPOCHS"
-          value: "50"
+          value: "200"
         - name: "PYTHONUNBUFFERED"
           value: "1"
         - name: "PARALLEL"
@@ -52,10 +56,17 @@ spec:
           value: "128"
         - name: "RESUME"
           value: "True"
+        - name: "ALPHA"
+          value: "0.5"
+        - name: "C"
+          value: "50"
       volumes:
       - name: nfs-access
-        persistentVolumeClaim: 
+        persistentVolumeClaim:
           claimName: 2446502gvol1claim # Change this
+      - name: dshm
+        emptyDir:
+          medium: Memory
 
       nodeSelector:
         node-role.ida/gputitan: "true"
