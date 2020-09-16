@@ -58,8 +58,8 @@ epochs = args.epochs
 learning_rate = args.lr
 batch_size = args.batch_size
 # VSC params
-c = args.c
-end_c = 250
+c = 50
+end_c = args.c
 alpha = args.alpha
 
 data_dir = args.dataset_dir
@@ -83,10 +83,10 @@ if data_dir and not os.path.exists(data_dir):
 if metadata_dir and not os.path.exists(metadata_dir):
     raise FileNotFoundError("Invalid path to metadata")
 
-folder_name = '/' + model_type + '/'
+folder_name = '/' + model_type + 'arch1' + '/'
 is_vsc = model_type == 'vsc'
 if is_vsc:
-    folder_name += 'c' + str(c) + 'a' + str(alpha)
+    folder_name += 'c' + str(end_c) + 'a' + str(alpha)
 folder_name += 'z' + str(latent_dim) + 'b' + str(beta) + 'lr' + str(learning_rate) + 'bs' + str(batch_size) + '/'
 
 recon_folder = base_dir + folder_name + 'reconstruction/'
@@ -99,6 +99,7 @@ Path(samples_folder).mkdir(parents=False, exist_ok=True)
 Path(model_folder).mkdir(parents=False, exist_ok=True)
 Path(tensorboard_folder).mkdir(parents=True, exist_ok=True)
 # Setting manual seed for reproducibility
+batch_size = 512
 torch.manual_seed(22)
 
 # Is cuda available?
@@ -195,8 +196,8 @@ def train(model, optimizer, epoch, train_loader):
         if is_vsc:
             recon_batch, mu, logvar, gamma = fwd_args
             loss, mse, kld, slab, spike = vsc_loss(recon_batch, data, mu, logvar, gamma, alpha=alpha)
-            train_slab += slab
-            train_spike += spike
+            train_slab += slab.item()
+            train_spike += spike.item()
         else:
             recon_batch, mu, logvar = fwd_args
             loss, mse, kld = vae_loss(recon_batch, data, mu, logvar)
@@ -246,8 +247,8 @@ def test(model, epoch, test_loader):
             if is_vsc:
                 recon_batch, mu, logvar, gamma = fwd_args
                 loss, mse, kld, slab, spike = vsc_loss(recon_batch, data, mu, logvar, gamma, alpha=alpha)
-                test_slab += slab
-                test_spike += spike
+                test_slab += slab.item()
+                test_spike += spike.item()
             else:
                 recon_batch, mu, logvar = fwd_args
                 loss, mse, kld = vae_loss(recon_batch, data, mu, logvar)
@@ -346,8 +347,8 @@ for epoch in range(starting_epoch, epochs + 1):
     val_loss = test(model, epoch, val_data)
 
     for idx, term in enumerate(keys):
-        train_trace[term].append(train_loss[idx].item())
-        val_trace[term].append(val_loss[idx].item())
+        train_trace[term].append(train_loss[idx])
+        val_trace[term].append(val_loss[idx])
 
         tb_writer.add_scalars('Loss/' + term, {
             'train': train_loss[idx],
@@ -394,6 +395,7 @@ cf_id = compound_folder['Image_FileName_DAPI'].apply(lambda x: int(label_mapping
 compound_folder['id'] = cf_id
 compound_folder = compound_folder[compound_folder.id != -1]
 comp_list = compound_folder['Image_Metadata_Compound'].unique()
+#comp_list = np.array(label_mapping.keys())
 
 model.eval()
 if parallel:
@@ -454,10 +456,15 @@ if is_vsc:
     logger.info('* Avg Slab: {:.8f}'.format(test_slab))
     logger.info('* Avg Spike: {:.8f}'.format(test_spike))
 
+#label_mapping = {v: k for k, v in label_mapping.items()}
+#comp_list = np.array(list(label_mapping.values()))
+
 test_compounds = []
 for label in test_labels:
     compound = compound_folder[compound_folder.id == label.item()]['Image_Metadata_Compound'].values[0]
     test_compounds.append(compound)
+    #test_compounds.append(label_mapping[label.item()])
+test_compounds = np.array(test_compounds)
 categorical_labels = pd.Series(test_compounds, dtype="category")
 
 folder_name = base_dir + folder_name
@@ -470,6 +477,7 @@ logger.info('Calculating Mahalanobis distance')
 def compound_mean(compound):
     selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == compound]
     is_compound = np.isin(test_labels, selected_comps.id.values)
+    #is_compound = test_compounds == compound
     comp_matrix = test_z[is_compound].numpy()
     mean = np.mean(comp_matrix, axis=0)
     mean = mean.reshape(latent_dim, 1)
@@ -563,10 +571,12 @@ for x in comp_list:
     distances = []
     selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == x]
     is_compound = np.isin(test_labels, selected_comps.id.values)
+    #is_compound = test_compounds == x
     comp_x = test_z[is_compound].numpy()
     for y in comp_list:
         selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == y]
         is_compound = np.isin(test_labels, selected_comps.id.values)
+        #is_compound = test_compounds == y
         comp_y = test_z[is_compound].numpy()
         distances.append(symmetric_kl(comp_x, comp_y))
 
@@ -593,10 +603,12 @@ comp_b = comp_list[comp_b]
 
 selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == comp_a]
 is_compound = np.isin(test_labels, selected_comps.id.values)
+#is_compound = test_compounds == comp_a
 comp_arr_a = test_z[is_compound].numpy()
 
 selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == comp_b]
 is_compound = np.isin(test_labels, selected_comps.id.values)
+#is_compound = test_compounds == comp_b
 comp_arr_b = test_z[is_compound].numpy()
 
 np.random.seed(22)
@@ -625,7 +637,7 @@ reducer = umap.UMAP(low_memory=True, random_state=22)
 z_umap = reducer.fit_transform(test_z)
 logger.info('UMAP finished')
 plt.figure(figsize=(10,10))
-scatter = sns.scatterplot(z_umap[:, 0], z_umap[:, 1], alpha=0.9, size=1, hue=categorical_labels.cat.codes, palette=sns.hls_palette(len(comp_list)))
+scatter = sns.scatterplot(z_umap[:, 0], z_umap[:, 1], alpha=0.9, size=1, hue=categorical_labels.cat.codes, palette=sns.hls_palette(len(comp_list)), legend=False)
 plt.title('All compounds')
 tb_writer.add_figure('Projection/UMAP', scatter.figure, global_step=epochs)
 
@@ -640,6 +652,7 @@ logger.info('Creating UMAP plots')
 for compound in comp_list:
     selected_comps = compound_folder[compound_folder['Image_Metadata_Compound'] == compound]
     is_compound = np.isin(test_labels, selected_comps.id.values)
+    #is_compound = test_compounds == compound
     comp_slice = z_umap[is_compound]
     x = comp_slice[:, 0]
     y = comp_slice[:, 1]

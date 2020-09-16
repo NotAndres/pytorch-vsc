@@ -7,10 +7,40 @@ class VAE(nn.Module):
         super(VAE, self).__init__()
         self.latent_dim = latent_dim
 
+        # Initial channels 3 > 128 > 64 > 32
+        # Initial filters 3 > 3 > 3
+
+        # First change 3 > 32 > 64 > 128
+        # Filters 3 > 3 > 5
+
+        # Second change 3 > 32 > 64 > 128 > 256
+        # Filters 3 > 3 > 5 > 5
+
         # Encoder
-        self.encoder_conv1 = self.getConvolutionLayer(3, 128)
-        self.encoder_conv2 = self.getConvolutionLayer(128, 64)
-        self.encoder_conv3 = self.getConvolutionLayer(64, 32)
+        #self.encoder_conv1 = self.getConvolutionLayer(3, 128)
+        self.encoder_conv1 = nn.Sequential(
+            nn.Conv2d(in_channels=3, out_channels=128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2)
+        )
+        #self.encoder_conv2 = self.getConvolutionLayer(128, 64)
+        self.encoder_conv2 = nn.Sequential(
+            nn.Conv2d(in_channels=128, out_channels=64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2)
+        )
+        #self.encoder_conv3 = self.getConvolutionLayer(64, 32)
+        self.encoder_conv3 = nn.Sequential(
+            nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
+            nn.MaxPool2d(kernel_size=2)
+        )
+
+        # self.encoder_conv4 = nn.Sequential(
+        #     nn.Conv2d(in_channels=128, out_channels=256, kernel_size=5, stride=1, padding=2),
+        #     nn.ReLU(),
+        #     nn.MaxPool2d(kernel_size=2)
+        # )
 
         self.flatten = nn.Flatten()
 
@@ -27,28 +57,30 @@ class VAE(nn.Module):
 
         self.decoder_deconv1 = nn.Sequential(
             nn.Conv2d(in_channels=32, out_channels=64, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
             nn.Upsample(scale_factor=(2, 2), mode='nearest')
         )
         # 48x48x64
         self.decoder_deconv2 = nn.Sequential(
             nn.Conv2d(in_channels=64, out_channels=128, kernel_size=3, stride=1, padding=1),
+            nn.ReLU(),
             nn.Upsample(scale_factor=(2, 2), mode='nearest')
         )
 
+        # self.decoder_deconv3 = nn.Sequential(
+        #     nn.Conv2d(in_channels=64, out_channels=32, kernel_size=3, stride=1, padding=1),
+        #     nn.ReLU(),
+        #     nn.Upsample(scale_factor=(2, 2), mode='nearest')
+        # )
+
         self.decoder_conv1 = nn.Conv2d(in_channels=128, out_channels=3, kernel_size=3, stride=1, padding=1)
         # 96x96x3
-
-    def getConvolutionLayer(self, in_channels, out_channels):
-        return nn.Sequential(
-            nn.Conv2d(in_channels=in_channels, out_channels=out_channels, kernel_size=3, stride=1, padding=1),
-            nn.ReLU(),
-            nn.MaxPool2d(kernel_size=2)
-        )
 
     def encode(self, x):
         x = self.encoder_conv1(x)
         x = self.encoder_conv2(x)
         x = self.encoder_conv3(x)
+        # x = self.encoder_conv4(x)
 
         x = self.flatten(x)
         mu = self.encoder_fc1(x)
@@ -67,6 +99,7 @@ class VAE(nn.Module):
         z = self.decoder_upsampler1(z.view(-1, 32, 12, 12))
         z = self.decoder_deconv1(z)
         z = self.decoder_deconv2(z)
+        # z = self.decoder_deconv3(z)
         recon = self.decoder_conv1(z)
         return recon
 

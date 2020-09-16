@@ -39,13 +39,13 @@ spec:
         - name: "METADATA_DIR"
           value: "/nfs/metadata/"
         - name: "MODEL"
-          value: "vae"
+          value: "vsc"
         - name: "BETA"
           value: "1"
         - name: "LATENT_DIM"
-          value: "128"
+          value: "256"
         - name: "EPOCHS"
-          value: "200"
+          value: "65"
         - name: "PYTHONUNBUFFERED"
           value: "1"
         - name: "PARALLEL"
@@ -57,9 +57,9 @@ spec:
         - name: "RESUME"
           value: "True"
         - name: "ALPHA"
-          value: "0.5"
+          value: "0.05"
         - name: "C"
-          value: "50"
+          value: "250"
       volumes:
       - name: nfs-access
         persistentVolumeClaim:
